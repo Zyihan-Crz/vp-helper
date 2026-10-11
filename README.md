@@ -2,7 +2,7 @@
 
 Ubuntu 上的 XCPC 虚拟参赛终端助手，支持 QOJ、Codeforces ICPC 比赛和 Codeforces Gym。上方显示成绩与完整提交记录，下方保留比赛目录中的普通 shell。
 
-当前版本：0.1.10。
+当前版本：0.1.11。
 
 ## 安装
 
@@ -36,9 +36,13 @@ vp history
 
 也支持 `vp CONTEST_URL`。计分范围限定为 ICPC；普通 Codeforces Round 的 CF / IOI 计分会在开赛前被拒绝。
 
-首次使用在终端配置账号及已有登录 Cookie，Codeforces / Gym 还需要 API key 与 API secret。配置保存在 `~/.config/vp/config.json`，权限为 600；也可以参考 `config.example.json` 填写。`cf` 与 `gym` 默认共用 Codeforces 配置。
+先在 Ubuntu 的 Firefox 登录 QOJ 或 Codeforces，再运行比赛命令。`vp` 和内置 `submit` 自动读取 Firefox 的登录状态，并通过网站导航中的登录用户核对账号；未填写 handle 时也可以从已验证的浏览器登录自动取得。Codeforces / Gym 的 API key 与 API secret 仍在首次使用时配置。配置保存在 `~/.config/vp/config.json`，权限为 600；也可以参考 `config.example.json` 填写。`cf` 与 `gym` 默认共用 Codeforces 配置。
 
-这里的 Cookie 是浏览器保存的登录凭据。填写时只复制已登录网页请求中 `Cookie` 的值，不包含 `Cookie:` 标签、其他请求头或 `Set-Cookie`。登录过期时先在 Ubuntu 浏览器重新登录，再更新配置中的 `cookie`。配置按当前 Linux 用户保存；root 运行时使用 `/root/.config/vp/config.json`，icpc 用户运行时使用 `/home/icpc/.config/vp/config.json`。
+自动读取支持 Firefox 的普通安装及 Ubuntu Snap 目录，读取该网站的持久 Cookie 和最新会话恢复记录；其他网站及容器、隐私会话不参与导入。程序只读取浏览器文件。验证通过后将登录数据保存到本地配置，账号不匹配或网络验证失败时保留原配置。GET 遇到登录过期会重新读取并验证一次；启动 VP 和提交代码的 POST 不自动重发。Firefox 尚未保存新会话时稍候再运行命令，或登录时勾选“记住我”。
+
+登录过期时，在 Firefox 重新登录同一个账号，再运行原命令即可，无需复制 Cookie。多 Firefox 配置可在对应平台账号中指定 `firefox_profile` 为该 profile 的完整路径；sudo 启动时默认使用原普通用户的 Firefox。root 与普通用户的应用配置仍分别保存，root 使用 `/root/.config/vp/config.json`，普通用户使用自己的 `~/.config/vp/config.json`。
+
+已有手动配置也可继续使用。要固定使用手动 Cookie，在账号中设置 `"cookie_source": "manual"`；填写 `cookie` 时只复制请求中 `Cookie` 的值，省略 `Cookie:` 标签和其他请求头。
 
 每场比赛在桌面共用一个目录，例如 `2024 ICPC Nanjing Reg`。再次进入保留已有代码和输入数据，更新提交配置与题面；各次 VP 的开始时间和成绩状态独立保存。`submit A.cpp` 在对应比赛目录内运行。
 

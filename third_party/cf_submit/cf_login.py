@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from http.cookies import SimpleCookie
 import requests
+from vp_helper.browser_login import refresh_submission_login
 
 # codeforces.com sits behind Cloudflare, which fingerprints the TLS handshake:
 # a plain requests session is answered with "HTTP 403 / Just a moment...".
@@ -181,6 +182,7 @@ def login():
     if context.is_file():
         account = json.loads(context.read_text())
         if account.get('platform') == 'gym':
+            refresh_submission_login(context, account, 'gym')
             session = make_session(account['user_agent'])
             jar = SimpleCookie()
             jar.load(account['cookie'])
@@ -191,7 +193,7 @@ def login():
             logged_in = any(a.get('href', '').lower() == '/profile/' + account['handle'].lower()
                             for a in browser.select('#header a'))
             if not logged_in:
-                raise SystemExit('Codeforces login cookie expired or belongs to another account.')
+                raise SystemExit('Codeforces login expired or belongs to another account. Log in to the configured account in Firefox, then run submit again.')
             return browser
     handle, password = get_secret(True)
 

@@ -63,8 +63,12 @@ except ImportError:  # pragma: no cover - curl_cffi not installed
 
 
 class WebSession:
-    def __init__(self, origin: str, account: dict):
+    def __init__(self, origin: str, account: dict, *, auto_refresh: bool = True):
         self.origin = origin.rstrip("/")
+        self.account = account
+        self._browser_checked = False
+        self._auto_refresh = (auto_refresh and bool(account.get("handle"))
+                              and urlsplit(self.origin).hostname in ("qoj.ac", "codeforces.com"))
         if _IMPERSONATE:
             # curl_cffi supplies the browser headers that match the impersonated
             # fingerprint.  Do not override them with the config's user_agent --
@@ -77,9 +81,12 @@ class WebSession:
             self.session.headers["User-Agent"] = account.get(
                 "user_agent", "Mozilla/5.0 (X11; Linux x86_64) VP/0.1"
             )
+        self._set_cookies(account.get("cookie", ""))
+
+    def _set_cookies(self, value: str) -> None:
         host = urlsplit(self.origin).hostname
         cookie = SimpleCookie()
-        cookie.load(account.get("cookie", ""))
+        cookie.load(value)
         for key, value in cookie.items():
             try:
                 self.session.cookies.set(key, value.value, domain=host, path="/")
@@ -87,14 +94,35 @@ class WebSession:
                 # Some backends expose a narrower Cookies API.
                 self.session.cookies.set(key, value.value)
 
+    def _refresh_browser(self, *, force: bool = False) -> bool:
+        if not self._auto_refresh:
+            return False
+        from .browser_login import refresh_browser_account
+        platform = "qoj" if urlsplit(self.origin).hostname == "qoj.ac" else "gym"
+        if not refresh_browser_account(platform, self.account, force=force):
+            return False
+        self.session.cookies.clear()
+        self._set_cookies(self.account["cookie"])
+        return True
+
     def get(self, url: str, **kwargs) -> object:
+        if not self._browser_checked:
+            self._browser_checked = True
+            self._refresh_browser()
         host = urlsplit(url).hostname
+        refreshed = False
         for attempt in range(_RETRY_TOTAL + 1):
             if attempt:
                 # 1s then 2s -- the backoff the replaced urllib3 Retry used.
                 time.sleep(_RETRY_BACKOFF * 2 ** (attempt - 1))
             try:
                 r = self.session.get(url, timeout=(10, 40), **kwargs)
+                if (not refreshed and r.status_code == 200
+                        and urlsplit(r.url).path in ("/login", "/enter")):
+                    refreshed = True
+                    if self._refresh_browser(force=True):
+                        # Only an idempotent GET is repeated after refreshing login.
+                        r = self.session.get(url, timeout=(10, 40), **kwargs)
             except _RequestException as exc:
                 if attempt == _RETRY_TOTAL:
                     raise VPError(f"Connection failed: {host} ({type(exc).__name__})") from None
@@ -117,7 +145,9 @@ class WebSession:
         if r.status_code != 200:
             raise VPError(f"{urlsplit(r.url).hostname} returned HTTP {r.status_code}")
         if urlsplit(r.url).path in ("/login", "/enter"):
-            raise VPError("Login session expired; update the account cookie in ~/.config/vp/config.json.")
+            if self.account.get("cookie_source") == "manual":
+                raise VPError("Login session expired; update the account cookie in ~/.config/vp/config.json.")
+            raise VPError("Login session expired. Log in to this site in Firefox, then run the command again.")
         # Cloudflare's interstitial is only meaningful for textual responses.
         # A PDF or other binary body must not be decoded here: requests happens
         # to tolerate it, but curl_cffi reports such a response with a non-codec

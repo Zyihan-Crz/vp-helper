@@ -17,6 +17,7 @@ from rich.table import Table
 from rich import box
 
 from .models import Contest, Reference, Submission, VPError
+from .browser_login import browser_fields, refresh_browser_account
 from .parsing import contest_url, contest_id_url
 from .receipts import ReceiptReader
 from .scoring import rank_of, rank_label, prize_of, recent_submissions, score_submissions, statistics, submission_history
@@ -40,6 +41,14 @@ def load_account(platform: str) -> dict:
     config = read_json(path)
     key = "gym" if platform == "cf" and "cf" not in config else platform
     account = config.setdefault(key, {})
+    before = dict(account)
+    refresh_browser_account(platform, account)
+    if account != before:
+        write_json(path, config)
+    if not account.get("cookie") and account.get("cookie_source") != "manual":
+        site = "QOJ" if platform == "qoj" else "Codeforces"
+        raise VPError(f"No matching Firefox login was found for {site}. "
+                      "Log in to the site in Firefox, then run the same vp command again.")
     required = ("handle", "cookie") if platform == "qoj" else ("handle", "cookie", "api_key", "api_secret")
     missing = [key for key in required if not account.get(key)]
     if missing and not sys.stdin.isatty():
@@ -76,12 +85,12 @@ def configure_submit(api, contest: Contest, directory: Path) -> None:
         ids = [int(value) for value in contest.problems.values()]
         if not bundled and ids != list(range(ids[0], ids[0] + len(ids))):
             raise VPError("This QOJ contest has nonconsecutive problem IDs. Use the installed submit script with problem_ids support.")
-        write_json(directory / "contest.json", api.submit_configuration(contest))
+        write_json(directory / "contest.json", {**api.submit_configuration(contest), **browser_fields(api.account)})
     elif bundled:
         write_json(directory / "contest.json", {"name": contest.name, "platform": "gym",
                    "contest_id": int(contest.contest_id), "handle": api.handle,
                    "cookie": api.account["cookie"],
-                   "user_agent": api.web.session.headers["User-Agent"]})
+                   "user_agent": api.web.session.headers["User-Agent"], **browser_fields(api.account)})
     else:
         # ehnryx/cf_submit reads a plain contestid beside cf.py, not JSON.
         location = Path(api.account.get("cf_submit_directory") or Path(script).resolve().parent)
@@ -91,7 +100,7 @@ def configure_submit(api, contest: Contest, directory: Path) -> None:
             write_json(directory / "contest.json", {"name": contest.name, "platform": "gym",
                         "base_url": contest.url, "contest_id": int(contest.contest_id),
                         "problems": "".join(contest.problems), "cookie": api.account["cookie"],
-                        "user_agent": api.web.session.headers["User-Agent"]})
+                        "user_agent": api.web.session.headers["User-Agent"], **browser_fields(api.account)})
         else:
             raise VPError("The Gym submit script's configuration format must be connected before a native VP is started.")
     if bundled:
