@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 import re
 import time
@@ -10,7 +11,7 @@ import requests
 
 from .http import WebSession, form_values
 from .models import Cell, Contest, Reference, Rules, Submission, TeamScore, VPError
-from .originals import OriginalReplay, cache_archive_submissions, classify, load_archive_submissions, load_metadata
+from .originals import OriginalReplay, cache_archive_submissions, classify, identity, load_archive_submissions, load_metadata
 from .parsing import directory_name, js_value, medals_from_html, seconds, timestamp
 from .scoring import verdict
 
@@ -31,6 +32,7 @@ class QOJ:
         self._replay = None
         self._replay_error = ""
         self._next_replay_attempt = 0.0
+        self._public_web = None
 
     def _page(self, suffix: str = "", **params) -> BeautifulSoup:
         return self.web.soup(self.url + suffix, params={"locale": "en", **params})
@@ -151,15 +153,64 @@ class QOJ:
         payload["submit-regvir"] = "regvir"
         if not payload.get("_token"):
             raise VPError("QOJ did not provide a native VP start token.")
-        self.web.post(urljoin(self.url, form.get("action", self.url)), payload)
-        confirmed = self._registration(duration=contest.rules.duration)
-        if not confirmed:
-            raise VPError("QOJ did not confirm a VP start time in the account registration record.")
-        if current and confirmed[0] == current[0]:
+        post_error = None
+        site_message = ""
+        try:
+            response = self.web.post(urljoin(self.url, form.get("action", self.url)), payload)
+            site_message = self._start_message(response)
+        except VPError as exc:
+            # The request may have reached QOJ even if its response was lost.
+            # Verify the registration before reporting failure; never send it again.
+            post_error = exc
+        confirmed = None
+        registration_error = None
+        for delay in (0, 1, 2):
+            if delay:
+                time.sleep(delay)
+            try:
+                confirmed = self._registration(duration=contest.rules.duration)
+                registration_error = None
+            except VPError as exc:
+                registration_error = exc
+                continue
+            if confirmed and (not current or confirmed[0] > current[0]):
+                self.start_time = confirmed[0]
+                contest.rules.duration = confirmed[1]
+                return self.start_time
+            if site_message:
+                break
+        if post_error:
+            raise post_error
+        if site_message:
+            raise VPError(f"QOJ could not start the VP: {site_message}")
+        if registration_error:
+            raise VPError(f"The native VP start could not be verified: {registration_error}. "
+                          f"Run vp qoj {self.id} again to check the existing registration.")
+        if current and confirmed and confirmed[0] <= current[0]:
             raise VPError("QOJ did not create a new native VP; the old participation is already finished.")
-        self.start_time = confirmed[0]
-        contest.rules.duration = confirmed[1]
-        return self.start_time
+        raise VPError("QOJ did not confirm a VP start time in the account registration record. "
+                      f"Run vp qoj {self.id} again to check the existing registration.")
+
+    @staticmethod
+    def _start_message(response) -> str:
+        # QOJ can return a form rejection as an HTTP 200 message page.
+        # Keep that explanation instead of replacing it with a generic error.
+        content = getattr(response, "content", None)
+        if not isinstance(content, (str, bytes)):
+            return ""
+        soup = BeautifulSoup(content, "html.parser")
+        errors = soup.select(".alert-danger, .has-error .help-block")
+        if errors:
+            return " ".join(node.get_text(" ", strip=True) for node in errors)[:500]
+        title = soup.title.get_text(" ", strip=True) if soup.title else ""
+        if not re.match(r"^(?:Error|Message|Notice|错误|消息|提示)(?:\b|\s|[-:：])", title, re.I):
+            return ""
+        main = soup.select_one(".uoj-content, main, #content")
+        if main:
+            for node in main.select("script, style, nav, header, footer, form"):
+                node.decompose()
+            return main.get_text(" ", strip=True)[:500] or title
+        return title[:500]
 
     def submit_configuration(self, contest: Contest) -> dict:
         ids = [int(x) for x in contest.problems.values()]
@@ -344,17 +395,86 @@ class QOJ:
         # Keep the public archive connection across metadata and event downloads.
         # This session carries none of the judge account's cookies.
         with requests.Session() as public_web:
-            return self._original_reference(html, contest, elapsed, released, public_web)
+            return self._original_reference(html, contest, elapsed, released, public_web,
+                                            fetch_final=elapsed < contest.rules.duration)
 
-    def _original_reference(self, html: str, contest: Contest, elapsed: float, released: bool, public_web) -> Reference:
+    @staticmethod
+    def external_reference_from_html(html: str, contest: Contest) -> Reference:
+        """Read QOJ's public final table, matching only the original roster."""
+        soup = BeautifulSoup(html, "html.parser")
+        if "Current Time:" in soup.get_text(" ", strip=True):
+            return Reference(message="QOJ returned a VP replay instead of the original final standings.")
+        metadata = contest.extra["original_eligibility"]
+        teams = {identity(team["name"]): team for team in metadata["teams"]}
+        problems = list(contest.problems)
+        for table in soup.select("table"):
+            headers = table.select("tr th")
+            labels = [node.get_text(" ", strip=True).split()[0] for node in headers]
+            if labels[2:2 + len(problems)] != problems or labels[2 + len(problems):4 + len(problems)] != ["Solved", "Penalty"]:
+                continue
+            rows = []
+            for tr in table.select("tr"):
+                columns = tr.select("td")
+                if len(columns) != len(labels):
+                    continue
+                team = teams.get(identity(columns[1].get_text(" ", strip=True)))
+                if team is None:
+                    continue
+                cells = {}
+                for problem, node in zip(problems, columns[2:2 + len(problems)]):
+                    value = node.get_text(" ", strip=True).lstrip("*")
+                    accepted = re.fullmatch(r"\+(\d*)\s+(\d+):(\d{2})", value)
+                    rejected = re.fullmatch(r"-(\d+)(?:\s+\d+:\d{2})?", value)
+                    if accepted:
+                        cells[problem] = Cell(int(accepted[1] or 0) + 1, 0, True,
+                                              int(accepted[2]) * 60 + int(accepted[3]))
+                    elif rejected:
+                        cells[problem] = Cell(int(rejected[1]))
+                    elif value == "-":
+                        cells[problem] = Cell()
+                    else:
+                        return Reference(message="An original QOJ final result is frozen or unsupported.")
+                row = TeamScore(team["id"], team["name"], cells, penalty_minutes=contest.rules.penalty_minutes)
+                solved, penalty = (node.get_text(strip=True) for node in columns[2 + len(problems):4 + len(problems)])
+                if not solved.isdigit() or not penalty.isdigit() or (row.solved, row.penalty) != (int(solved), int(penalty)):
+                    return Reference(message="The public QOJ final table does not match its problem results.")
+                rows.append(row)
+            try:
+                classify(rows, contest)
+            except VPError as exc:
+                return Reference(message=str(exc))
+            return Reference(rows, complete=True, statistics_complete=True, released=True)
+        return Reference(message="QOJ did not provide a public final table for these contest problems.")
+
+    def _original_reference(self, html: str, contest: Contest, elapsed: float, released: bool, public_web,
+                            *, fetch_final: bool = False) -> Reference:
         try:
             metadata = load_metadata(contest, web=public_web)
         except VPError as exc:
             return Reference(message=str(exc), released=released)
         contest.extra["original_eligibility"] = metadata
+        duration = metadata.get("duration")
+        if not isinstance(duration, int) or duration < contest.rules.duration:
+            return Reference(message="The original contest duration is shorter than the native VP duration.", released=released)
+        # An onsite extension can make the original longer than QOJ's native VP.
+        # Validate the complete original using its own window; keep the user's
+        # timer and the cutoff for their submissions at the native VP duration.
+        original = replace(contest, rules=replace(contest.rules, duration=duration))
+        if self._replay is not None and not fetch_final:
+            return self._replay.at(contest, elapsed, released=released)
         # Imported ghosts contain final totals. Validate a separate original
         # event stream against those totals before exposing any partial scores.
-        final = self.reference_from_html(html, contest, contest.rules.duration, released=True)
+        if fetch_final:
+            # The authenticated standings are already truncated to VP time.
+            # The public results endpoint has the complete imported scoreboard;
+            # this separate session deliberately has no account cookies.
+            if self._public_web is None:
+                self._public_web = WebSession(self.origin, {})
+            public = self._public_web.get(self.origin + "/results/QOJ" + self.id, params={"locale": "en"})
+            final = self.external_reference_from_html(public.text, original)
+        else:
+            final = self.reference_from_html(html, original, duration, released=True)
+        contest.medals = original.medals
         final.released = released
         if not final.complete:
             return final
@@ -363,8 +483,18 @@ class QOJ:
         if self._replay is None and time.monotonic() >= self._next_replay_attempt:
             self._next_replay_attempt = time.monotonic() + 120
             try:
-                events = load_archive_submissions(contest, metadata, web=public_web)
-                self._replay = OriginalReplay(contest, metadata["teams"], events, final.rows)
+                events = load_archive_submissions(original, metadata, web=public_web)
+                try:
+                    replay = OriginalReplay(original, metadata["teams"], events, final.rows)
+                except VPError:
+                    offset = duration - contest.rules.duration
+                    if offset <= 0:
+                        raise
+                    # Some QOJ imports shift the entire onsite clock. Accept
+                    # the shift only if every team's every final cell agrees.
+                    aligned = [replace(event, time=event.time - offset) for event in events]
+                    replay = OriginalReplay(original, metadata["teams"], aligned, final.rows)
+                self._replay = replay
                 cache_archive_submissions(metadata, events)
             except VPError as exc:
                 self._replay_error = str(exc)

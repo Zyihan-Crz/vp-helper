@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from dataclasses import replace
 import hashlib
 import base64
 import json
@@ -228,11 +229,16 @@ def archive_submissions(runs: list, metadata: dict, contest: Contest) -> list[Su
     seen = set()
     try:
         for run in runs:
-            sid = str(run.get("submission_id", run.get("id", "")))
             team = str(run["team_id"])
+            # Some exports include organizer/judge-account submissions. The
+            # original roster defines participants; full scoreboard validation
+            # still requires every participant's scoring events to agree.
+            if team not in teams:
+                continue
+            sid = str(run.get("submission_id", run.get("id", "")))
             problem = problems[str(run["problem_id"])]
             at = float(run["timestamp"]) / 1000
-            if (not sid or (team, sid) in seen or team not in teams or problem not in contest.problems
+            if (not sid or (team, sid) in seen or problem not in contest.problems
                     or not math.isfinite(at) or not 0 <= at < contest.rules.duration):
                 raise ValueError("invalid event identity or time")
             status = verdict(run["status"])
@@ -275,6 +281,7 @@ class OriginalReplay:
 
     def __init__(self, contest: Contest, teams: list[dict], submissions: list[Submission], expected: list[TeamScore]):
         self.problems = list(contest.problems)
+        self.duration = contest.rules.duration
         self.teams = teams
         self.events = {str(t["id"]): [] for t in teams}
         if len(self.events) != len(teams) or "me" in self.events:
@@ -303,14 +310,18 @@ class OriginalReplay:
     def _rows(self, contest: Contest, elapsed: float, *, released: bool) -> list[TeamScore]:
         result = []
         for team in self.teams:
-            row = score_submissions(self.events[str(team["id"])], self.problems, contest.rules, elapsed,
+            row = score_submissions(self.events[str(team["id"])], self.problems,
+                                    replace(contest.rules, duration=self.duration), elapsed,
                                     public=True, released=released, team_id=str(team["id"]), name=team["name"])
             row.eligible = team["official"]
             result.append(row)
         return result
 
     def at(self, contest: Contest, elapsed: float, *, released: bool = False) -> Reference:
-        key = int(min(elapsed, contest.rules.duration)), contest.rules.frozen(elapsed, released), released
+        # Once the native VP has ended and its standings are released, compare
+        # with the complete original, including any onsite extension.
+        at = self.duration if released and elapsed >= contest.rules.duration else min(elapsed, contest.rules.duration)
+        key = int(at), contest.rules.frozen(elapsed, released), released
         if key != self._cache_key:
             self._cache = Reference(self._rows(contest, key[0], released=released),
                                     complete=True, statistics_complete=True, released=released,

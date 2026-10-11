@@ -46,7 +46,7 @@ def load_account(platform: str) -> dict:
         raise VPError(f"Missing {platform} account fields {', '.join(missing)} in {path}")
     if missing:
         console.print(f"First use: configure the existing {platform} login session.", markup=False)
-        labels = {"handle": "Account handle", "cookie": "Cookie header from your Ubuntu browser", "api_key": "Codeforces API key", "api_secret": "Codeforces API secret"}
+        labels = {"handle": "Account handle", "cookie": "Browser login Cookie (copy the Cookie value only)", "api_key": "Codeforces API key", "api_secret": "Codeforces API secret"}
         for key in missing:
             value = input(labels[key] + ": ").strip() if key == "handle" else getpass.getpass(labels[key] + ": ").strip()
             if not value:
