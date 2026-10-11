@@ -5,10 +5,11 @@
  '''
  Requirements for contest.json
  
-@@ -13,15 +14,38 @@
+@@ -12,10 +13,29 @@
+ '''
  
  import sys
- import json
+-import json
 -import requests
 +try:
 +    # qoj.ac sits behind Cloudflare, which fingerprints the TLS handshake;
@@ -32,20 +33,41 @@
  from selectolax.lexbor import LexborHTMLParser
 +from vp_helper.receipts import qoj_id_from_list, qoj_submission_id, qoj_submission_ids, record_receipt
 +from vp_helper.models import VPError
++from vp_helper.submit_context import submission_configuration
  
  LANG_MAPPING = {
      '.cpp': 'C++20',
-     '.cc': 'C++20',
+@@ -23,8 +43,27 @@
      '.py': 'PyPy3',
  }
-+
+ 
+-with open('contest.json', 'r') as f:
+-    contest = json.load(f)
 +if len(sys.argv) == 2 and sys.argv[1] in ('-h', '--help'):
 +    print('Usage: submit code.cpp [-y]')
 +    sys.exit(0)
++
++if __name__ == '__main__' and (len(sys.argv) not in (2, 3)
++                              or (len(sys.argv) == 3 and sys.argv[2] != '-y')):
++    print('Usage: submit code.cpp [-y]')
++    sys.exit(2)
++
++try:
++    source = Path(sys.argv[1]) if __name__ == '__main__' else None
++    config_path, contest = submission_configuration(source)
++    if contest.get('platform') not in (None, 'qoj'):
++        raise VPError('This directory is not configured for QOJ submissions.')
++    missing = [key for key in ('name', 'base_url', 'problems', 'offset', 'user_agent', 'cookie')
++               if key not in contest]
++    if missing:
++        raise VPError(f'{config_path} is missing QOJ fields: ' + ', '.join(missing)
++                      + '. Run vp qoj ID to regenerate the submission configuration.')
++except VPError as exc:
++    raise SystemExit('submit: ' + str(exc)) from None
  
- with open('contest.json', 'r') as f:
-     contest = json.load(f)
-@@ -33,13 +57,50 @@
+ contest_name: str = contest['name']
+ contest_base_url: str = contest['base_url']
+@@ -33,13 +72,50 @@
  user_agent: str = contest['user_agent']
  cookie: str = contest['cookie']
  
@@ -103,7 +125,7 @@
  
      parser = LexborHTMLParser(response.text)
      token_node = parser.css_first('input[name="_token"]')
-@@ -50,6 +111,15 @@
+@@ -50,6 +126,15 @@
  
      if not dynamic_token:
          raise RuntimeError('Failed to get token')
@@ -119,7 +141,7 @@
  
  
      payload_files = {
-@@ -61,14 +131,29 @@
+@@ -61,14 +146,29 @@
          'submit-answer': (None, 'answer')
      }
  
@@ -157,7 +179,7 @@
  
  
  def confirm(message: str) -> bool:
-@@ -82,7 +167,7 @@
+@@ -82,7 +182,7 @@
      if len(sys.argv) not in [2, 3]:
          print('Usage: submit code.cpp [-y]')
          sys.exit(-1)
@@ -166,7 +188,7 @@
      file_name = sys.argv[1]
      yes_by_default = False
      if len(sys.argv) == 3 and sys.argv[-1] == '-y':
-@@ -92,20 +177,21 @@
+@@ -92,22 +192,24 @@
      if not code_path.exists():
          print(f'Error: {file_name} does not exist')
          sys.exit(-1)
@@ -192,8 +214,11 @@
 +
      print('Submission information:')
      print(f'  filename:    {file_name}')
++    print(f'  config:      {config_path}')
      print(f'  contest:     {contest_name}')
-@@ -115,6 +201,6 @@
+     print(f'  problem:     {problem}')
+     print(f'  language:    {lang}')
+@@ -115,6 +217,6 @@
  
      if yes_by_default or confirm('Do you want to continue?'):
          code = code_path.read_text('utf8')

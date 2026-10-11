@@ -2,7 +2,7 @@
 
 Ubuntu 上的 XCPC 虚拟参赛终端助手，支持 QOJ、Codeforces ICPC 比赛和 Codeforces Gym。上方显示成绩与完整提交记录，下方保留比赛目录中的普通 shell。
 
-当前版本：0.1.9。
+当前版本：0.1.10。
 
 ## 安装
 
@@ -41,6 +41,8 @@ vp history
 这里的 Cookie 是浏览器保存的登录凭据。填写时只复制已登录网页请求中 `Cookie` 的值，不包含 `Cookie:` 标签、其他请求头或 `Set-Cookie`。登录过期时先在 Ubuntu 浏览器重新登录，再更新配置中的 `cookie`。配置按当前 Linux 用户保存；root 运行时使用 `/root/.config/vp/config.json`，icpc 用户运行时使用 `/home/icpc/.config/vp/config.json`。
 
 每场比赛在桌面共用一个目录，例如 `2024 ICPC Nanjing Reg`。再次进入保留已有代码和输入数据，更新提交配置与题面；各次 VP 的开始时间和成绩状态独立保存。`submit A.cpp` 在对应比赛目录内运行。
+
+请用同一个 Linux 用户运行 `vp` 和 `submit`；root 与普通用户的桌面目录和 VP 状态互相独立。QOJ 提交器会在当前目录、源码所在目录及其上级目录查找 `contest.json`，因此也支持从子目录提交或在别处指定源码路径。当前目录与源码绑定不同比赛、账号或题号时会要求切换到源码的比赛目录；同场同账号的配置以当前目录为准。找不到配置时给出恢复指引。重新运行同一场 `vp` 命令会补齐或刷新提交配置，沿用已经确认的原站开始时间。
 
 ## 成绩与界面
 

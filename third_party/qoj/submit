@@ -13,7 +13,6 @@ Requirements for contest.json
 '''
 
 import sys
-import json
 try:
     # qoj.ac sits behind Cloudflare, which fingerprints the TLS handshake;
     # plain requests/urllib3 is rejected with "HTTP 403 / Just a moment...".
@@ -36,6 +35,7 @@ from urllib.parse import urljoin, urlsplit
 from selectolax.lexbor import LexborHTMLParser
 from vp_helper.receipts import qoj_id_from_list, qoj_submission_id, qoj_submission_ids, record_receipt
 from vp_helper.models import VPError
+from vp_helper.submit_context import submission_configuration
 
 LANG_MAPPING = {
     '.cpp': 'C++20',
@@ -47,8 +47,23 @@ if len(sys.argv) == 2 and sys.argv[1] in ('-h', '--help'):
     print('Usage: submit code.cpp [-y]')
     sys.exit(0)
 
-with open('contest.json', 'r') as f:
-    contest = json.load(f)
+if __name__ == '__main__' and (len(sys.argv) not in (2, 3)
+                              or (len(sys.argv) == 3 and sys.argv[2] != '-y')):
+    print('Usage: submit code.cpp [-y]')
+    sys.exit(2)
+
+try:
+    source = Path(sys.argv[1]) if __name__ == '__main__' else None
+    config_path, contest = submission_configuration(source)
+    if contest.get('platform') not in (None, 'qoj'):
+        raise VPError('This directory is not configured for QOJ submissions.')
+    missing = [key for key in ('name', 'base_url', 'problems', 'offset', 'user_agent', 'cookie')
+               if key not in contest]
+    if missing:
+        raise VPError(f'{config_path} is missing QOJ fields: ' + ', '.join(missing)
+                      + '. Run vp qoj ID to regenerate the submission configuration.')
+except VPError as exc:
+    raise SystemExit('submit: ' + str(exc)) from None
 
 contest_name: str = contest['name']
 contest_base_url: str = contest['base_url']
@@ -194,6 +209,7 @@ if __name__ == '__main__':
 
     print('Submission information:')
     print(f'  filename:    {file_name}')
+    print(f'  config:      {config_path}')
     print(f'  contest:     {contest_name}')
     print(f'  problem:     {problem}')
     print(f'  language:    {lang}')

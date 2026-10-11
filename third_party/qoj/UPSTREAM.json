@@ -6,6 +6,7 @@
     "Fixed interpreter path and help before configuration",
     "Optional explicit problem ID mapping",
     "Server-confirmed submission IDs and immediate pending notifications to the VP monitor",
-    "curl_cffi transport for Cloudflare, with CurlMime for the multipart submission that curl_cffi's files= cannot express"
+    "curl_cffi transport for Cloudflare, with CurlMime for the multipart submission that curl_cffi's files= cannot express",
+    "Resolve contest configuration beside the source or in its parent directories, with explicit missing or conflicting configuration errors"
   ]
 }

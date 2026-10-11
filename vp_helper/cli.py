@@ -163,6 +163,16 @@ def prepare_start(url: str) -> tuple[Path, dict]:
         if current:
             old = read_json(Path(current["state_path"]))
             if old.get("url") == canonical and tmux_exists(old.get("tmux_session", "")):
+                # A resumed session still needs a usable local submission file;
+                # refreshing it never starts or resets the native participation.
+                config = load_account(platform)
+                api = adapter(canonical, config)
+                if api.handle != old.get("handle"):
+                    raise VPError("The configured account changed; restore this VP's account before resuming it.")
+                directory = Path(old["directory"])
+                directory.mkdir(parents=True, exist_ok=True)
+                configure_submit(api, Contest.from_dict(old["contest"]), directory)
+                bind_submit_context(directory, Path(current["state_path"]), old)
                 return Path(current["state_path"]), old
             if old.get("status") != "complete" and time.time() < old.get("start_time", 0) + old.get("contest", {}).get("rules", {}).get("duration", 0):
                 raise VPError(f"A native VP is already running: {old.get('url')}. Open that URL to resume it.")
