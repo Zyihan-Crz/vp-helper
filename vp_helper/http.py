@@ -105,13 +105,14 @@ class WebSession:
         self._set_cookies(self.account["cookie"])
         return True
 
-    def get(self, url: str, **kwargs) -> object:
+    def get(self, url: str, *, retry: bool = True, **kwargs) -> object:
         if not self._browser_checked:
             self._browser_checked = True
             self._refresh_browser()
         host = urlsplit(url).hostname
         refreshed = False
-        for attempt in range(_RETRY_TOTAL + 1):
+        retries = _RETRY_TOTAL if retry else 0
+        for attempt in range(retries + 1):
             if attempt:
                 # 1s then 2s -- the backoff the replaced urllib3 Retry used.
                 time.sleep(_RETRY_BACKOFF * 2 ** (attempt - 1))
@@ -124,10 +125,10 @@ class WebSession:
                         # Only an idempotent GET is repeated after refreshing login.
                         r = self.session.get(url, timeout=(10, 40), **kwargs)
             except _RequestException as exc:
-                if attempt == _RETRY_TOTAL:
+                if attempt == retries:
                     raise VPError(f"Connection failed: {host} ({type(exc).__name__})") from None
                 continue
-            if r.status_code in _RETRY_STATUS and attempt < _RETRY_TOTAL:
+            if r.status_code in _RETRY_STATUS and attempt < retries:
                 continue
             return self.check(r)
         # The final iteration always returns or raises; this keeps the flow total.

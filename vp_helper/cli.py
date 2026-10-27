@@ -236,7 +236,9 @@ def start(url: str) -> None:
 def poll(api, contest: Contest, elapsed: float, refresh_reference: bool = False):
     """Keep slow requests outside the terminal's input and redraw loop."""
     try:
-        return (api.reference(contest, elapsed) if refresh_reference else api.submissions(contest)), ""
+        result = api.reference(contest, elapsed) if refresh_reference else api.submissions(contest)
+        message = getattr(api, "submission_message", "") if not refresh_reference else ""
+        return result, message if isinstance(message, str) else ""
     except VPError as exc:
         return None, str(exc)
 
@@ -292,7 +294,7 @@ def monitor(path: Path) -> None:
                         last_poll = now
                     submission_error = error
                     pending = any(s.verdict == "PENDING" for s in submissions.values())
-                    backoff = min(60.0, max(5.0, backoff * 2)) if error else 2.0 if pending else 5.0
+                    backoff = min(60.0, max(5.0, backoff * 2)) if error and incoming is None else 2.0 if pending else 5.0
                     next_poll = now + backoff
                 if reference_future is not None and reference_future.done():
                     refreshed, reference_error = reference_future.result()
@@ -317,13 +319,13 @@ def monitor(path: Path) -> None:
                                   if contest.rules.problem_reveal_count and frozen else elapsed)
                 public = score_submissions(list(submissions.values()), list(contest.problems), contest.rules,
                                            public_elapsed, public=True, released=current_reference.released, name=api.handle)
-                all_final = all(s.verdict != "PENDING" for s in submissions.values() if 0 <= s.time < contest.rules.duration)
+                all_final = all(s.verdict not in ("PENDING", "UNAVAILABLE") for s in submissions.values() if 0 <= s.time < contest.rules.duration)
                 finalized = (elapsed >= contest.rules.duration and not frozen and current_reference.complete
                              and api.submissions_complete and have_polled and all_final)
-                rank = "?" if frozen else str(rank_of(private, current_reference.rows)) if current_reference.complete else "—"
-                shown_rank = rank_label(private, current_reference.rows) if current_reference.complete and not frozen else rank
+                rank = "?" if frozen else str(rank_of(private, current_reference.rows)) if current_reference.complete and private.results_complete else "—"
+                shown_rank = rank_label(private, current_reference.rows) if current_reference.complete and private.results_complete and not frozen else rank
                 prize = prize_of(private, current_reference.rows, contest.medals) if finalized else ""
-                stats = statistics(current_reference.rows + [public], list(contest.problems)) if current_reference.statistics_complete else None
+                stats = statistics(current_reference.rows + [public], list(contest.problems)) if current_reference.statistics_complete and public.results_complete else None
                 shown_message = submission_error or reference_error or current_reference.message
                 if finalized and current_reference.replay is not None and not submission_error and not reference_error:
                     shown_message = "Finished"
@@ -351,7 +353,7 @@ def monitor(path: Path) -> None:
                     write_json(path, state)
                     row = {"start_time": datetime.fromtimestamp(state["start_time"], timezone.utc).isoformat(),
                            "contest": contest.name, "url": contest.url, "solved": private.solved,
-                           "penalty": private.penalty, "rank": rank if finalized else "", "prize": prize}
+                           "penalty": private.penalty if private.results_complete else "", "rank": rank if finalized else "", "prize": prize}
                     if finalized or not preserve_final:
                         update_history(Path(state["history_path"]), row)
                 time.sleep(0.1)

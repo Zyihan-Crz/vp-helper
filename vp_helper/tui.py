@@ -59,6 +59,8 @@ class Dashboard:
                      f"{c.tries} {'try' if c.tries == 1 else 'tries'}" if c.tries else "—")
             if width < 155:
                 tries = f"{c.tries}+{c.pending}" if c.pending else str(c.tries) if c.tries else "—"
+            if c.unresolved:
+                tries = f"{c.tries}+?" if c.tries else "?"
             if c.solved:
                 cells.append(Text(f"{tries}\n{c.solve_time}", style="black on #60e760"))
             elif c.pending:
@@ -67,7 +69,8 @@ class Dashboard:
                 cells.append(Text(tries, style="black on #e87272"))
             else:
                 cells.append(Text(tries))
-        table.add_row(Text(result, style="bold default"), self.me.name, str(self.me.solved), str(self.me.penalty),
+        table.add_row(Text(result, style="bold default"), self.me.name, str(self.me.solved),
+                      str(self.me.penalty) if self.me.results_complete else "?",
                       *cells, end_section=True)
         if not self.contest.rules.problem_reveal_count:
             for key in ("submitted", "attempted", "accepted"):
@@ -118,9 +121,9 @@ class Dashboard:
                 values = [item["problem"], "#" + item["id"], clock(item["time"]), v + " · practice"]
                 results.add_row(*values, style=color)
             else:
-                color = "#008000" if v == "CORRECT" else "#808080" if v in ("PENDING", "TOO-LATE") else "#ff0000"
+                color = "#008000" if v == "CORRECT" else "#808080" if v in ("PENDING", "TOO-LATE", "UNAVAILABLE") else "#ff0000"
                 results.add_row(Text(item["problem"]), Text("#" + item["id"]),
-                                Text(clock(item["time"])), Text(v, style=color))
+                                Text(clock(item["time"])), Text("RESULT UNAVAILABLE" if v == "UNAVAILABLE" else v, style=color))
         if not self.submissions:
             results.add_row(Text("No submissions yet", style="#555555"))
         return results

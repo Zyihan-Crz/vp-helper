@@ -85,6 +85,7 @@ class Cell:
     pending: int = 0
     solved: bool = False
     solve_time: int | None = None
+    unresolved: int = 0
 
 
 @dataclass
@@ -95,6 +96,10 @@ class TeamScore:
     eligible: bool = True
     penalty_minutes: int = 20
     known_penalty: int | None = None
+
+    @property
+    def results_complete(self) -> bool:
+        return not any(c.unresolved for c in self.cells.values())
 
     @property
     def solved(self) -> int:

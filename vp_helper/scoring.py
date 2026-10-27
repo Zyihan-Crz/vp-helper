@@ -55,6 +55,8 @@ def score_submissions(
             c.pending += 1
         elif s.verdict == "PENDING":
             c.pending += 1
+        elif s.verdict == "UNAVAILABLE":
+            c.unresolved += 1
         elif s.verdict == "TOO-LATE":
             continue
         elif s.verdict == "COMPILER-ERROR" and not rules.compile_penalty:
