@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from collections import Counter
 from datetime import datetime
 import re
 import time
@@ -11,8 +12,8 @@ import requests
 
 from .http import WebSession, form_values
 from .models import Cell, Contest, Reference, Rules, Submission, TeamScore, VPError
-from .originals import OriginalReplay, cache_archive_submissions, classify, identity, load_archive_submissions, load_metadata
-from .parsing import directory_name, js_value, medals_from_html, seconds, timestamp
+from .originals import OriginalReplay, cache_archive_submissions, classify, eligibility_lookup, identity, load_archive_submissions, load_metadata, lookup_team
+from .parsing import ccpc_reveal_count, directory_name, js_value, medals_from_html, seconds, timestamp
 from .scoring import verdict
 
 
@@ -57,21 +58,22 @@ class QOJ:
             raise VPError("This QOJ contest does not use ICPC scoring.")
         freeze = re.search(r"Scoreboard will be frozen after\s*(\d+:\d{2}:\d{2})", text)
         penalty = re.search(r"Penalty:\s*(\d+)\s*minute", text)
-        registry = self._page("/registrants")
-        duration = self._registry_duration(registry)
+        # Registrants can choose a shorter rated-VP window. It is not the
+        # contest duration (4582 already has two-hour rated participations).
+        duration = None
+        listing = self.web.soup(self.origin + "/contests", params={"locale": "en"})
+        for row in listing.select("tr"):
+            if not any(urlsplit(a.get("href", "")).path == f"/contest/{self.id}" for a in row.select("a")):
+                continue
+            raw = row.get_text(" ", strip=True)
+            match = re.search(r"([\d.]+)\s*hours?", raw)
+            if match:
+                duration = int(float(match[1]) * 3600)
+            match = re.search(r"(\d+)\s*minutes?", raw)
+            if match and not duration:
+                duration = int(match[1]) * 60
         if not duration:
-            # The public contest list carries explicit durations, including old contests.
-            listing = self.web.soup(self.origin + "/contests", params={"locale": "en"})
-            for row in listing.select("tr"):
-                if not any(urlsplit(a.get("href", "")).path == f"/contest/{self.id}" for a in row.select("a")):
-                    continue
-                raw = row.get_text(" ", strip=True)
-                match = re.search(r"([\d.]+)\s*hours?", raw)
-                if match:
-                    duration = int(float(match[1]) * 3600)
-                match = re.search(r"(\d+)\s*minutes?", raw)
-                if match and not duration:
-                    duration = int(match[1]) * 60
+            duration = self._registry_duration(self._page("/registrants"))
         if not duration:
             raise VPError("QOJ did not provide the contest duration; a five-hour duration will not be guessed.")
         pdfs = {}
@@ -91,7 +93,8 @@ class QOJ:
             raise VPError("QOJ did not expose a statement PDF for this contest.")
         return Contest("qoj", self.id, self.url, name, name, problem_map,
                        Rules(duration, int(penalty[1]) if penalty else 20,
-                             freeze_at=seconds(freeze[1]) if freeze else None), pdfs)
+                             freeze_at=seconds(freeze[1]) if freeze else None,
+                             problem_reveal_count=ccpc_reveal_count(name)), pdfs)
 
     @staticmethod
     def _registry_duration(soup) -> int | None:
@@ -405,7 +408,7 @@ class QOJ:
         if "Current Time:" in soup.get_text(" ", strip=True):
             return Reference(message="QOJ returned a VP replay instead of the original final standings.")
         metadata = contest.extra["original_eligibility"]
-        teams = {identity(team["name"]): team for team in metadata["teams"]}
+        teams = eligibility_lookup(metadata["teams"])
         problems = list(contest.problems)
         for table in soup.select("table"):
             headers = table.select("tr th")
@@ -413,11 +416,13 @@ class QOJ:
             if labels[2:2 + len(problems)] != problems or labels[2 + len(problems):4 + len(problems)] != ["Solved", "Penalty"]:
                 continue
             rows = []
+            empty_duplicates = Counter(identity(name) for name in metadata.get("ignored_empty_team_names", []))
             for tr in table.select("tr"):
                 columns = tr.select("td")
                 if len(columns) != len(labels):
                     continue
-                team = teams.get(identity(columns[1].get_text(" ", strip=True)))
+                display_name = columns[1].get_text(" ", strip=True)
+                team = lookup_team(teams, display_name)
                 if team is None:
                     continue
                 cells = {}
@@ -438,6 +443,10 @@ class QOJ:
                 solved, penalty = (node.get_text(strip=True) for node in columns[2 + len(problems):4 + len(problems)])
                 if not solved.isdigit() or not penalty.isdigit() or (row.solved, row.penalty) != (int(solved), int(penalty)):
                     return Reference(message="The public QOJ final table does not match its problem results.")
+                name_key = identity(team["name"])
+                if empty_duplicates[name_key] and not any(c.tries or c.pending or c.solved for c in cells.values()):
+                    empty_duplicates[name_key] -= 1
+                    continue
                 rows.append(row)
             try:
                 classify(rows, contest)

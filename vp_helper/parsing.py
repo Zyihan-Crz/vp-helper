@@ -71,15 +71,20 @@ def js_value(html: str, key: str, default=None):
 
 def directory_name(titles: list[str]) -> str:
     for title in titles:
+        # Recent CCPC titles pair a Chinese name with a complete English name.
+        english = [part for part in re.findall(r"[（(]([^（）()]+)[）)]", title)
+                   if re.search(r"\b(?:ICPC|CCPC)\b", part, re.I) and re.search(r"\b20\d{2}\b", part)]
+        if english:
+            title = english[-1]
         year = re.search(r"\b(20\d{2})\b", title)
         series = re.search(r"\b(ICPC|CCPC)\b", title, re.I)
         if not year or not series:
             continue
-        kind = "Reg" if re.search(r"Regional|区域", title, re.I) else "Inv" if re.search(r"Invitational|邀请", title, re.I) else "Pro" if re.search(r"Provincial|省赛", title, re.I) else None
+        kind = "Reg" if re.search(r"Regional|区域|\bSite\b", title, re.I) else "Inv" if re.search(r"Invitational|邀请", title, re.I) else "Pro" if re.search(r"Provincial|省赛", title, re.I) else None
         if not kind:
             continue
         site = title
-        patterns = [r"\b20\d{2}\b", r"\bICPC\b", r"\bCCPC\b", r"\bAsia(?:\s+East)?\b", r"\b(?:The|Contest|Regional|Invitational|Provincial|Programming|Collegiate|China|International|Chinese|University|Finals?|Championship)\b", r"\b\d+(?:st|nd|rd|th)\b"]
+        patterns = [r"\b20\d{2}\b", r"\bICPC\b", r"\bCCPC\b", r"\bAsia(?:\s+East)?\b", r"\b(?:The|Contest|Regional|Invitational|Provincial|Programming|Collegiate|China|International|Chinese|University|Finals?|Championship|Site)\b", r"\b\d+(?:st|nd|rd|th)\b"]
         for pattern in patterns:
             site = re.sub(pattern, " ", site, flags=re.I)
         site = re.sub(r"[()\[\]:,/\\\-–—]+", " ", site)
@@ -87,6 +92,11 @@ def directory_name(titles: list[str]) -> str:
         if site:
             return f"{year[1]} {series[1].upper()} {site} {kind}"
     raise VPError("The platform does not identify an ICPC/CCPC year, site and Reg/Inv/Pro contest name.")
+
+
+def ccpc_reveal_count(name: str) -> int | None:
+    match = re.fullmatch(r"(20\d{2}) CCPC .+ Reg", name)
+    return 50 if match and int(match[1]) >= 2026 else None
 
 
 def medals_from_html(html: str, source: str) -> Medals | None:

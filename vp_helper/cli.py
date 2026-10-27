@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime, timezone
 import getpass
+import math
 import os
 from pathlib import Path
 import shlex
@@ -20,7 +21,7 @@ from .models import Contest, Reference, Submission, VPError
 from .browser_login import browser_fields, refresh_browser_account
 from .parsing import contest_url, contest_id_url
 from .receipts import ReceiptReader
-from .scoring import rank_of, rank_label, prize_of, recent_submissions, score_submissions, statistics, submission_history
+from .scoring import rank_of, rank_label, prize_of, recent_submissions, revealed_problems, score_submissions, statistics, submission_history
 from .storage import config_directory, desktop, file_lock, read_history, read_json, state_directory, update_history, write_json
 from .tui import display, TerminalDashboard
 
@@ -312,8 +313,10 @@ def monitor(path: Path) -> None:
                 records = submission_history(list(submissions.values()), list(contest.problems), contest.rules, elapsed)
                 private = score_submissions(list(submissions.values()), list(contest.problems), contest.rules,
                                             elapsed, name=api.handle)
+                public_elapsed = (math.nextafter(float(contest.rules.freeze_at), -math.inf)
+                                  if contest.rules.problem_reveal_count and frozen else elapsed)
                 public = score_submissions(list(submissions.values()), list(contest.problems), contest.rules,
-                                           elapsed, public=True, released=current_reference.released, name=api.handle)
+                                           public_elapsed, public=True, released=current_reference.released, name=api.handle)
                 all_final = all(s.verdict != "PENDING" for s in submissions.values() if 0 <= s.time < contest.rules.duration)
                 finalized = (elapsed >= contest.rules.duration and not frozen and current_reference.complete
                              and api.submissions_complete and have_polled and all_final)
@@ -333,7 +336,9 @@ def monitor(path: Path) -> None:
                 if last_poll and now - last_poll > 15:
                     shown_message = "Results stale · " + shown_message
                 if now >= next_render:
-                    view.update(display(contest, elapsed, private, shown_rank, prize, stats, records, shown_message))
+                    dashboard = display(contest, elapsed, private, shown_rank, prize, stats, records, shown_message)
+                    dashboard.revealed = revealed_problems(contest, elapsed, current_reference)
+                    view.update(dashboard)
                     next_render = now + 0.25
                 if fresh_submissions:
                     preserve_final = (state.get("status") == "complete" and all_final

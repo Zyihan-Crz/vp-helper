@@ -14,6 +14,7 @@ class Rules:
     compile_penalty: bool = False
     freeze_at: int | None = None
     unfreeze_at: int | None = None
+    problem_reveal_count: int | None = None
 
     def __post_init__(self):
         if self.duration <= 0 or self.penalty_minutes < 0:
@@ -22,6 +23,8 @@ class Rules:
             raise VPError("The scoreboard freeze time is outside the contest window.")
         if self.unfreeze_at is not None and self.unfreeze_at < self.duration:
             raise VPError("The original scoreboard unfreeze time precedes contest end.")
+        if self.problem_reveal_count is not None and (type(self.problem_reveal_count) is not int or self.problem_reveal_count <= 0):
+            raise VPError("The problem reveal threshold must be a positive official-team count.")
 
     def frozen(self, elapsed: float, released: bool = False) -> bool:
         return (

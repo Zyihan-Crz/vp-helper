@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .models import Cell, Medals, Rules, Submission, TeamScore, VPError
+from .models import Cell, Contest, Medals, Reference, Rules, Submission, TeamScore, VPError
 
 
 _VERDICTS = {
@@ -124,3 +124,18 @@ def statistics(rows: list[TeamScore], problems: list[str]) -> dict[str, dict[str
             result["attempted"][p] += int(c.tries + c.pending > 0)
             result["accepted"][p] += int(c.solved)
     return result
+
+
+def revealed_problems(contest: Contest, elapsed: float, reference: Reference) -> frozenset[str]:
+    threshold = contest.rules.problem_reveal_count
+    if (threshold is None or elapsed >= contest.rules.duration
+            or contest.rules.freeze_at is not None and elapsed >= contest.rules.freeze_at):
+        return frozenset(contest.problems)
+    if not reference.statistics_complete:
+        return frozenset()
+    # Only distinct official original teams unlock labels; a VP is not another
+    # original participant, and neither starred teams nor repeated ACs count.
+    return frozenset(problem for problem in contest.problems if len({
+        row.id for row in reference.rows
+        if row.eligible and row.id != "me" and row.cells.get(problem, Cell()).solved
+    }) >= threshold)

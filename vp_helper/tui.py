@@ -31,6 +31,7 @@ class Dashboard:
     stats: dict | None
     submissions: list[dict]
     message: str = ""
+    revealed: frozenset[str] | None = None
 
     def fixed(self, width: int):
         # Equal side columns keep the contest title at the screen's center.
@@ -68,12 +69,35 @@ class Dashboard:
                 cells.append(Text(tries))
         table.add_row(Text(result, style="bold default"), self.me.name, str(self.me.solved), str(self.me.penalty),
                       *cells, end_section=True)
-        for key in ("submitted", "attempted", "accepted"):
-            table.add_row("", key, "", "", *(str(self.stats[key][p]) if self.stats else "—"
-                                             for p in self.contest.problems))
+        if not self.contest.rules.problem_reveal_count:
+            for key in ("submitted", "attempted", "accepted"):
+                table.add_row("", key, "", "", *(str(self.stats[key][p]) if self.stats else "—"
+                                                 for p in self.contest.problems))
         labels = self._record_table()
         labels.add_row("problem", "submission", "time", "result", style="bold black on #eeeeee")
+        if self.contest.rules.problem_reveal_count:
+            return Group(heading, Text(" "), table, self.public_statistics(), Text(" "), labels)
         return Group(heading, Text(" "), table, Text(" "), labels)
+
+    def public_statistics(self):
+        visible = self.revealed or frozenset()
+        freeze = self.contest.rules.freeze_at
+        if self.elapsed >= self.contest.rules.duration or freeze is not None and self.elapsed >= freeze:
+            visible = frozenset(self.contest.problems)
+        ordered = [p for p in self.contest.problems if p in visible]
+        # Unknown columns are grouped, not left at A..M positions. Their values
+        # are also hidden so the column order cannot expose the problem mapping.
+        columns = ordered + [None] * (len(self.contest.problems) - len(ordered))
+        table = Table(box=None, expand=True, padding=(0, 1), style="default", header_style="bold")
+        table.add_column("public", justify="left")
+        for problem in columns:
+            table.add_column(problem or "?", justify="center")
+        for key in ("submitted", "attempted", "accepted"):
+            table.add_row(key, *("?" if p is None else str(self.stats[key][p]) if self.stats else "—" for p in columns))
+        caption = f"CCPC · revealed {len(ordered)}/{len(self.contest.problems)} · {self.contest.rules.problem_reveal_count} official AC"
+        if freeze is not None:
+            caption += " · all labels at " + clock(freeze)
+        return Group(Text(caption, style="#555555"), table)
 
     @staticmethod
     def _record_table():

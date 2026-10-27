@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+from collections import Counter
 from dataclasses import replace
 import hashlib
 import base64
@@ -26,8 +27,8 @@ _github_api_preferred = False
 def archive_json(web, url: str):
     """Read identical archive files through either GitHub public endpoint."""
     global _github_api_preferred
-    match = re.fullmatch(r"/xcpcio/board-data/([a-f0-9]{40}|main)/(data/[A-Za-z0-9_./-]+\.json)", urlsplit(url).path)
-    alternative = ("https://api.github.com/repos/xcpcio/board-data/contents/" + match[2]
+    match = re.fullmatch(r"/(xcpcio/board-data|algoux/srk-collection)/([a-f0-9]{40}|main|master)/([A-Za-z0-9_./-]+\.json)", urlsplit(url).path)
+    alternative = ("https://api.github.com/repos/" + match[1] + "/contents/" + match[3]
                    if urlsplit(url).hostname == "raw.githubusercontent.com" and match else None)
     choices = [False, True] if alternative else [False]
     if alternative and _github_api_preferred:
@@ -38,7 +39,7 @@ def archive_json(web, url: str):
             if attempt and use_api not in retry:
                 continue
             try:
-                options = {"params": {"ref": match[1]}, "headers": {"Accept": "application/vnd.github.raw+json"}} if use_api else {}
+                options = {"params": {"ref": match[2]}, "headers": {"Accept": "application/vnd.github.raw+json"}} if use_api else {}
                 response = web.get(alternative if use_api else url, timeout=(10, 30), **options)
                 response.raise_for_status()
                 data = response.json()
@@ -146,19 +147,55 @@ def load_metadata(contest: Contest, *, web=None) -> dict:
     source = "https://raw.githubusercontent.com/xcpcio/board-data/main/" + path
     try:
         # Public archive reads use a separate session, without the OJ's credentials.
-        with (nullcontext(web) if web is not None else requests.Session()) as web:
+        with (nullcontext(web) if web is not None else requests.Session()) as public:
             files = []
             for filename in ("config.json", "team.json"):
-                files.append(archive_json(web, source + "/" + filename))
+                files.append(archive_json(public, source + "/" + filename))
             teams = list(files[1].values()) if isinstance(files[1], dict) else files[1]
             organizations = None
             if any("organization" not in team and "organization_id" in team for team in teams):
                 if files[0].get("organizations", {}).get("url") != "organizations.json":
                     raise VPError("The original archive's organization reference is unsupported.")
-                organizations = archive_json(web, source + "/organizations.json")
+                organizations = archive_json(public, source + "/organizations.json")
         return board_metadata(*files, contest, source, organizations)
-    except (requests.RequestException, ValueError):
+    except (requests.RequestException, ValueError, VPError) as original_error:
+        from . import srk
+        source = srk.source_url(contest)
+        if source:
+            try:
+                with (nullcontext(web) if web is not None else requests.Session()) as public:
+                    data = archive_json(public, source)
+                result = srk.metadata(data, contest, source)
+                write_json(cache_path("srk", source), {"source": source, "ranklist": data})
+                return result
+            except (requests.RequestException, ValueError, VPError):
+                raise VPError("Original eligibility could not be verified from XCPCIO or the SRK archive.") from None
+        if isinstance(original_error, VPError):
+            raise
         raise VPError("Original team eligibility could not be read from XCPCIO; the official rank remains unavailable.") from None
+
+
+def eligibility_lookup(teams: list[dict]) -> dict:
+    lookup, ids = {}, set()
+    for team in teams:
+        if team["id"] in ids:
+            raise VPError("The original archive has ambiguous team identities or eligibility.")
+        ids.add(team["id"])
+        for name in [team["name"], *team.get("aliases", [])]:
+            key = identity(name)
+            if key in lookup and lookup[key]["id"] != team["id"]:
+                raise VPError("The original archive has ambiguous team identities or eligibility.")
+            lookup[key] = team
+    return lookup
+
+
+def lookup_team(lookup: dict, name: str) -> dict | None:
+    team = lookup.get(identity(name))
+    if team is None and name.startswith("*"):
+        starred = lookup.get(identity(name[1:].strip()))
+        if starred is not None and not starred["official"]:
+            return starred
+    return team
 
 
 def classify(rows: list[TeamScore], contest: Contest, metadata: dict | None = None) -> None:
@@ -171,8 +208,8 @@ def classify(rows: list[TeamScore], contest: Contest, metadata: dict | None = No
             or metadata.get("problems") != list(contest.problems)):
         raise VPError("The original eligibility archive does not match this contest's rules and problems.")
     teams = metadata.get("teams", [])
-    lookup = {identity(t["name"]): t for t in teams}
-    if not teams or len(lookup) != len(teams) or not all(isinstance(t.get("official"), bool) for t in teams):
+    lookup = eligibility_lookup(teams)
+    if not teams or not all(isinstance(t.get("official"), bool) for t in teams):
         raise VPError("The original archive has missing or ambiguous team identities or eligibility.")
 
     def import_group(ident: str) -> str | None:
@@ -182,36 +219,43 @@ def classify(rows: list[TeamScore], contest: Contest, metadata: dict | None = No
         return (match[1] or "1") if match else None
 
     groups = {import_group(row.id) for row in rows
-              if (team := lookup.get(identity(row.name))) and team["official"]}
+              if (team := lookup_team(lookup, row.name)) and team["official"]}
     if None not in groups and len(groups) > 1:
         raise VPError("The original teams appear in multiple imported contest datasets.")
     original_group = next(iter(groups)) if len(groups) == 1 and None not in groups else None
     seen = set()
     resolved = []
+    empty_duplicates = Counter(identity(name) for name in metadata.get("ignored_empty_team_names", []))
     for row in rows:
-        team = lookup.get(identity(row.name))
+        team = lookup_team(lookup, row.name)
         if team is None:
             group = import_group(row.id)
             if original_group is not None and group is not None and group != original_group:
                 continue
             if not row.eligible:  # QOJ's explicit unofficial import can be excluded directly.
-                resolved.append((row, False))
+                resolved.append((row, False, row.name))
                 continue
             raise VPError("An imported original team could not be matched to its official eligibility record.")
+        name_key = identity(team["name"])
+        if empty_duplicates[name_key] and not any(c.tries or c.pending or c.solved for c in row.cells.values()):
+            empty_duplicates[name_key] -= 1
+            continue
         if team["id"] in seen or not row.eligible and team["official"]:
             raise VPError("The original scoreboard has duplicate or inconsistent team eligibility records.")
         seen.add(team["id"])
-        resolved.append((row, team["official"]))
+        resolved.append((row, team["official"], team["name"]))
     if not all(t["id"] in seen for t in teams if t["official"]):
         raise VPError("The original scoreboard is missing a formally participating team.")
-    for row, eligible in resolved:
+    for row, eligible, name in resolved:
         row.eligible = eligible
-    rows[:] = [row for row, _ in resolved]
+        row.name = name
+    rows[:] = [row for row, _, _ in resolved]
     contest.extra["original_eligibility"] = metadata
     write_json(cache_path("eligibility", contest.url), metadata)
     medals = metadata.get("medals")
     if isinstance(medals, dict) and all(isinstance(medals.get(k), int) and medals[k] >= 0 for k in ("gold", "silver", "bronze")):
-        contest.medals = Medals(medals["gold"], medals["silver"], medals["bronze"], metadata["source"] + "/config.json")
+        source = metadata["source"] if metadata.get("source_format") == "srk" else metadata["source"] + "/config.json"
+        contest.medals = Medals(medals["gold"], medals["silver"], medals["bronze"], source)
 
 
 def cache_path(kind: str, source: str) -> Path:
@@ -252,11 +296,19 @@ def archive_submissions(runs: list, metadata: dict, contest: Contest) -> list[Su
 
 
 def load_archive_submissions(contest: Contest, metadata: dict, *, web=None) -> list[Submission]:
-    source = metadata["source"] + "/run.json"
+    source = metadata["source"] if metadata.get("source_format") == "srk" else metadata["source"] + "/run.json"
     path = cache_path("runs", source)
     cached = read_json(path)
     if cached and cached.get("source") == source:
         runs = cached.get("runs")
+    elif metadata.get("source_format") == "srk":
+        from . import srk
+        cached_srk = read_json(cache_path("srk", source))
+        data = cached_srk.get("ranklist") if cached_srk.get("source") == source else None
+        if data is None:
+            with (nullcontext(web) if web is not None else requests.Session()) as public:
+                data = archive_json(public, source)
+        return srk.submissions(data, metadata, contest)
     else:
         try:
             # These requests intentionally carry no judge session or API key.
@@ -270,7 +322,7 @@ def load_archive_submissions(contest: Contest, metadata: dict, *, web=None) -> l
 def cache_archive_submissions(metadata: dict, submissions: list[Submission]) -> None:
     problems = metadata.get("problem_ids") or {str(i): label for i, label in enumerate(metadata["problems"])}
     ids = {label: pid for pid, label in problems.items()}
-    source = metadata["source"] + "/run.json"
+    source = metadata["source"] if metadata.get("source_format") == "srk" else metadata["source"] + "/run.json"
     write_json(cache_path("runs", source), {"source": source, "runs": [
         {"id": s.id, "team_id": s.team, "problem_id": ids[s.problem],
          "timestamp": s.time * 1000, "status": s.verdict} for s in submissions]})
@@ -321,7 +373,11 @@ class OriginalReplay:
         # Once the native VP has ended and its standings are released, compare
         # with the complete original, including any onsite extension.
         at = self.duration if released and elapsed >= contest.rules.duration else min(elapsed, contest.rules.duration)
-        key = int(at), contest.rules.frozen(elapsed, released), released
+        frozen = contest.rules.frozen(elapsed, released)
+        if contest.rules.problem_reveal_count and frozen:
+            # Reveal every label at the freeze, but never reveal later attempts.
+            at = math.nextafter(float(contest.rules.freeze_at), -math.inf)
+        key = (at if contest.rules.problem_reveal_count and frozen else int(at)), frozen, released
         if key != self._cache_key:
             self._cache = Reference(self._rows(contest, key[0], released=released),
                                     complete=True, statistics_complete=True, released=released,

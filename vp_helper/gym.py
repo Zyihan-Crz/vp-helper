@@ -11,7 +11,7 @@ from urllib.parse import urlencode, urljoin, urlsplit
 from .http import WebSession, form_values
 from .models import Cell, Contest, Medals, Reference, Rules, Submission, TeamScore, VPError
 from .originals import OriginalReplay, classify, load_metadata
-from .parsing import directory_name, medals_from_html
+from .parsing import ccpc_reveal_count, directory_name, medals_from_html
 from .scoring import verdict
 
 _api_lock = threading.Lock()
@@ -110,7 +110,8 @@ class Gym:
         self._original = data
         return Contest(self.platform, self.id, self.url, name, name,
                        {p["index"]: p["index"] for p in data["problems"]},
-                       Rules(duration, freeze_at=duration-int(freeze) if freeze else None),
+                       Rules(duration, freeze_at=duration-int(freeze) if freeze else None,
+                             problem_reveal_count=ccpc_reveal_count(name)),
                        pdfs, medals, raw.get("startTimeSeconds"), raw.get("websiteUrl"))
 
     def _virtual_party(self):
