@@ -19,9 +19,10 @@ from rich import box
 
 from .models import Contest, Reference, Submission, VPError
 from .browser_login import browser_fields, refresh_browser_account
+from .history_lines import enrich_history
 from .parsing import contest_url, contest_id_url
 from .receipts import ReceiptReader
-from .scoring import rank_of, rank_label, prize_of, recent_submissions, revealed_problems, score_submissions, statistics, submission_history
+from .scoring import medal_lines, rank_of, rank_label, prize_of, recent_submissions, revealed_problems, score_submissions, statistics, submission_history
 from .storage import config_directory, desktop, file_lock, read_history, read_json, state_directory, update_history, write_json
 from .tui import display, TerminalDashboard
 
@@ -67,13 +68,22 @@ def load_account(platform: str) -> dict:
 
 
 def history() -> None:
-    rows = read_history(desktop() / "vp_history.csv")
+    rows = enrich_history(read_history(desktop() / "vp_history.csv"), state_directory())
     table = Table(box=box.SIMPLE, header_style="bold")
-    for key in ("start_time", "contest", "solved", "penalty", "rank", "prize"):
-        table.add_column(key)
+    columns = ("start_time", "contest", "solved", "penalty", "rank", "prize", "gold_line", "silver_line", "bronze_line")
+    for key in columns:
+        table.add_column(key.removesuffix("_line"))
     for row in sorted(rows, key=lambda r: r["start_time"], reverse=True):
-        table.add_row(*(row[key] or "—" for key in ("start_time", "contest", "solved", "penalty", "rank", "prize")))
+        values = []
+        for key in columns:
+            value = row.get(key) or "—"
+            if key.endswith("_line"):
+                value = value.replace(" (", "\n(")
+            values.append(value)
+        table.add_row(*values)
     console.print(table)
+    if rows:
+        console.print("Medal lines: solved/penalty, then rank limit. Original official final standings; — = unavailable.", markup=False)
 
 
 def configure_submit(api, contest: Contest, directory: Path) -> None:
@@ -347,6 +357,7 @@ def monitor(path: Path) -> None:
                                       and private.rank_key == final_score_key)
                     if finalized:
                         final_score_key = private.rank_key
+                        state["medal_lines"] = medal_lines(current_reference.rows, contest.medals)
                     state.update(contest=contest.to_dict(), submissions=[asdict(x) for x in submissions.values()],
                                  recent=recent, submission_history=records, last_sync_time=time.time(),
                                  status="complete" if finalized or preserve_final else "running")

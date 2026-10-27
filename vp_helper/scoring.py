@@ -115,6 +115,30 @@ def prize_of(me: TeamScore, original: list[TeamScore], medals: Medals | None) ->
     return "None"
 
 
+def medal_lines(original: list[TeamScore], medals: Medals | None, *, complete: bool = True) -> dict[str, str]:
+    keys = ("gold_line", "silver_line", "bronze_line")
+    if medals is None:
+        return dict.fromkeys(keys, "—")
+    counts = (medals.gold, medals.silver, medals.bronze + medals.additional_bronze)
+    if not all(type(n) is int and n >= 0 for n in counts):
+        return dict.fromkeys(keys, "—")
+    official = sorted((row for row in original if row.eligible and row.id != "me"), key=lambda row: row.rank_key)
+    result, limit = {}, 0
+    for key, count in zip(keys, counts):
+        limit += count
+        if count == 0:
+            result[key] = "None"
+        elif not complete or not official or any(not row.results_complete for row in official):
+            result[key] = f"— (≤{limit})"
+        elif limit > len(official) or official[limit - 1].solved == 0:
+            # Zero solves never earn a medal, even when medal places remain.
+            result[key] = f"≥1 solved (≤{limit})"
+        else:
+            row = official[limit - 1]
+            result[key] = f"{row.solved}/{row.penalty} (≤{limit})"
+    return result
+
+
 def statistics(rows: list[TeamScore], problems: list[str]) -> dict[str, dict[str, int]]:
     result = {key: dict.fromkeys(problems, 0) for key in ("submitted", "attempted", "accepted")}
     for row in rows:
