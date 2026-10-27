@@ -135,9 +135,9 @@ def revealed_problems(contest: Contest, elapsed: float, reference: Reference) ->
         return frozenset(contest.problems)
     if not reference.statistics_complete:
         return frozenset()
-    # Only distinct official original teams unlock labels; a VP is not another
-    # original participant, and neither starred teams nor repeated ACs count.
+    # Distinct original teams unlock labels, including starred teams. A VP is
+    # not another original participant, and repeated ACs never count twice.
     return frozenset(problem for problem in contest.problems if len({
         row.id for row in reference.rows
-        if row.eligible and row.id != "me" and row.cells.get(problem, Cell()).solved
+        if row.id != "me" and row.cells.get(problem, Cell()).solved
     }) >= threshold)

@@ -97,7 +97,7 @@ class Dashboard:
             table.add_column(problem or "?", justify="center")
         for key in ("submitted", "attempted", "accepted"):
             table.add_row(key, *("?" if p is None else str(self.stats[key][p]) if self.stats else "—" for p in columns))
-        caption = f"CCPC · revealed {len(ordered)}/{len(self.contest.problems)} · {self.contest.rules.problem_reveal_count} official AC"
+        caption = f"CCPC · revealed {len(ordered)}/{len(self.contest.problems)} · {self.contest.rules.problem_reveal_count} teams incl. starred"
         if freeze is not None:
             caption += " · all labels at " + clock(freeze)
         return Group(Text(caption, style="#555555"), table)
